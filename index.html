@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>EVM / MEV Systems Engineering — Portfolio</title>
+<meta name="description" content="Software engineering portfolio: a multi-DEX MEV arbitrage system and its milestone-controlled re-architecture.">
+<link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<header class="site">
+  <div class="wrap">
+    <div class="brand">EVM / MEV <span>Systems Engineering</span></div>
+    <nav class="top">
+      <a href="#projects">Projects</a>
+      <a href="#evolution">Evolution</a>
+      <a href="#evidence">Evidence</a>
+      <a href="#practice">Practice</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+<div class="wrap">
+
+  <div class="hero">
+    <div class="kicker">Software Engineering Portfolio</div>
+    <h1>Building and re-building a multi-DEX arbitrage system — with evidence, not adjectives.</h1>
+    <p class="lede">
+      Two related engineering efforts: an established event-driven arbitrage system that detects and
+      executes cross-DEX opportunities on EVM networks, and a from-scratch re-architecture of that same
+      system under milestone control, independent adversarial review, and an explicit live-execution
+      prohibition.
+    </p>
+    <p class="lede small muted">
+      Every claim on this site is traceable to a written engineering artifact — a gate verdict, a test
+      baseline, a closure adjudication, or a ratified design decision. Claims are labelled with their
+      evidence level, and unfinished work is never presented as finished.
+    </p>
+  </div>
+
+  <section class="block" id="projects">
+    <h2>Projects</h2>
+    <p class="sub">The same problem space, approached twice: once as a working system, once as a controlled rebuild.</p>
+
+    <div class="cards">
+      <div class="card">
+        <div class="tag-row">
+          <span class="badge b-implemented">IMPLEMENTED</span>
+          <span class="badge b-verified">VERIFIED</span>
+          <span class="badge b-documented">DOCUMENTED</span>
+        </div>
+        <h3>Legacy MEV Arbitrage System</h3>
+        <p>
+          An event-driven, multi-strategy arbitrage bot in Rust with a Solidity flashloan executor,
+          fork-based simulation, reorg recovery, and a monitoring dashboard. Built across
+          cross-DEX, triangular, and multi-hop strategies over six DEX families.
+        </p>
+        <p class="small">
+          Real engineering depth — and, honestly recorded, a real integration gap: detection existed,
+          execution existed, but the path joining them was never completed.
+        </p>
+        <div class="go"><a href="projects/legacy-arbitrage-system.html">Read the case study &rarr;</a></div>
+      </div>
+
+      <div class="card">
+        <div class="tag-row">
+          <span class="badge b-progress">WORK IN PROGRESS</span>
+          <span class="badge b-verified">VERIFIED</span>
+          <span class="badge b-planned">PLANNED</span>
+        </div>
+        <h3>System Re-Architecture</h3>
+        <p>
+          A clean-room rebuild of the same system as a 24-member Rust workspace with an acyclic
+          dependency graph, a single state authority, an eleven-state execution state machine,
+          a six-condition transaction send-path law, and mandatory simulation binding.
+        </p>
+        <p class="small">
+          Governed by pre-entry safety gates, per-milestone independent adversarial reviews, and an
+          explicit rule that live execution remains unauthorized until a human says otherwise.
+        </p>
+        <div class="go"><a href="projects/re-architecture.html">Read the case study &rarr;</a></div>
+      </div>
+    </div>
+  </section>
+  <section class="block" id="evolution">
+    <h2>Legacy &rarr; Lessons &rarr; New Architecture</h2>
+    <p class="sub">
+      The rebuild was not motivated by taste. It was motivated by a structural analysis of the existing
+      system that found specific, nameable defects — each of which became a named constraint in the new design.
+    </p>
+
+    <div class="evolution">
+      <div class="evo-step">
+        <div class="n">Stage 1</div>
+        <h4>Legacy system</h4>
+        <p>A single-crate Rust monolith that worked, was well tested, and had accumulated real structural debt.</p>
+        <ul>
+          <li>One strongly-connected dependency component</li>
+          <li>40+ distinct dependency cycles</li>
+          <li>Runtime state authority split three ways</li>
+          <li>Three-plus divergent profit calculators</li>
+          <li>Seventeen ad-hoc event channels</li>
+        </ul>
+      </div>
+
+      <div class="evo-step">
+        <div class="n">Stage 2</div>
+        <h4>Engineering lessons</h4>
+        <p>A forensic pass converted each defect into a permanent, testable constraint rather than a TODO.</p>
+        <ul>
+          <li>Layering by directory name is not layering</li>
+          <li>Two simulation paths that disagree is a correctness bug</li>
+          <li>Detection and execution must share one authority</li>
+          <li>An ungated send path is a safety defect, not a feature</li>
+          <li>Test counts prove nothing without invariants</li>
+        </ul>
+      </div>
+
+      <div class="evo-step">
+        <div class="n">Stage 3</div>
+        <h4>New architecture</h4>
+        <p>The constraints were ratified into an architecture where violations fail to compile or fail CI.</p>
+        <ul>
+          <li>Acyclic crate graph, enforced by tripwires</li>
+          <li>One state authority, one writer, immutable generations</li>
+          <li>One sequential profit ledger per candidate</li>
+          <li>One broadcaster; capability withheld until authorized</li>
+          <li>Invariant-named tests that assert architectural truths</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+  <section class="block" id="evidence">
+    <h2>Evidence highlights</h2>
+    <p class="sub">
+      Numbers are quoted from written gate, baseline, and closure artifacts. Nothing here is extrapolated.
+      Where a figure is reported by a review rather than re-executed, that is stated.
+    </p>
+
+    <div class="metrics">
+      <div class="metric"><div class="v">813 / 0 / 8</div><div class="k">legacy lib tests: passed / failed / ignored</div></div>
+      <div class="metric"><div class="v">16 / 16</div><div class="k">solidity contract tests (re-run independently)</div></div>
+      <div class="metric"><div class="v">24</div><div class="k">workspace members in the rebuild</div></div>
+      <div class="metric"><div class="v">460 / 0 / 0</div><div class="k">rebuild tests across 61 test targets</div></div>
+      <div class="metric"><div class="v">13 / 13</div><div class="k">architecture tripwires passing</div></div>
+      <div class="metric"><div class="v">0</div><div class="k">live transactions signed or submitted</div></div>
+    </div>
+
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr><th>Claim</th><th>Evidence</th><th>Level</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Legacy suite green and independently re-derived</td>
+            <td>An independent adversarial pass re-ran the full surface twice and reconciled an 809-vs-813 count discrepancy back to the exact change that caused it</td>
+            <td><span class="badge b-verified">VERIFIED</span></td>
+          </tr>
+          <tr>
+            <td>Uniswap V3 math proven terminating</td>
+            <td>Golden + differential suites against the protocol reference, plus a property test. Two reviewer errors were corrected <em>against the oracle</em>, never the reverse</td>
+            <td><span class="badge b-verified">VERIFIED</span></td>
+          </tr>
+          <tr>
+            <td>No ungated transaction send path in the legacy tree</td>
+            <td>Complete broadcast call-site inventory: every site gated, consequence paths re-assert the gate, dead-but-armed senders recorded for deletion</td>
+            <td><span class="badge b-verified">VERIFIED</span></td>
+          </tr>
+          <tr>
+            <td>Rebuild workspace compiles with an acyclic dependency graph</td>
+            <td>Foundation milestone PASS; the dependency DAG is spec-defined and CI-tripwired against forbidden edges</td>
+            <td><span class="badge b-verified">VERIFIED</span></td>
+          </tr>
+          <tr>
+            <td>Route and quote layer deterministic, with provenance</td>
+            <td>Milestone closed with route goldens and quote-provenance checks. Its throughput gate failed review once, was remediated, was <em>re-failed</em> by an independent reviewer, and only then passed</td>
+            <td><span class="badge b-verified">VERIFIED</span></td>
+          </tr>
+          <tr>
+            <td>Byte-exact calldata accepted by the frozen contract on a pinned fork</td>
+            <td>Fork acceptance session: positive executions plus seven fail-closed negative cases, deterministic across three fresh sessions</td>
+            <td><span class="badge b-verified">VERIFIED</span></td>
+          </tr>
+          <tr>
+            <td>Live trading / production deployment</td>
+            <td>Explicitly and repeatedly <strong>not authorized</strong> across every closure artifact; the live capability surface is absent from the tree</td>
+            <td><span class="badge b-not">NOT ESTABLISHED</span></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+  <section class="block" id="practice">
+    <h2>Engineering practice</h2>
+    <p class="sub">What the artifacts reveal about how this work is done — independent of the domain.</p>
+
+    <div class="cards">
+      <div class="card">
+        <h3>Independent verification</h3>
+        <p>
+          The author of an implementation never certifies it. Each milestone has an independent
+          adversarial gate written by a separate reviewer that re-derives claims from fresh evidence,
+          distrusts the prior conclusion, and must record its own independence caveats.
+        </p>
+      </div>
+      <div class="card">
+        <h3>Evidence labels</h3>
+        <p>
+          Every statement in every report carries a label: <code>FACT</code>, <code>RATIFIED</code>,
+          <code>INFERENCE</code>, <code>RECOMMENDATION</code>, <code>BLOCKER</code>,
+          <code>OPEN DECISION</code>. Speculation is never allowed to masquerade as measurement.
+        </p>
+      </div>
+      <div class="card">
+        <h3>Fail closed by default</h3>
+        <p>
+          Unknown capability &rArr; deny. Missing evidence &rArr; refuse. Stale simulation &rArr; reject.
+          Channel loss &rArr; an explicit policy, never a silent fallback. The safe outcome is the one
+          that happens when something is missing.
+        </p>
+      </div>
+      <div class="card">
+        <h3>Rollback points and scope fences</h3>
+        <p>
+          Every milestone declares its rollback point, acceptance criteria, and blocking conditions
+          <em>before</em> work starts. Out-of-scope items are recorded as deferred — never silently
+          dropped, never quietly widened.
+        </p>
+      </div>
+      <div class="card">
+        <h3>Anti-circular evidence</h3>
+        <p>
+          Where a test could pass by comparing a value against itself derived from the same source,
+          it is restructured: expectations are authored independently of the bytes under test, and any
+          claim that remains single-sourced is named explicitly rather than hidden.
+        </p>
+      </div>
+      <div class="card">
+        <h3>Safety before capability</h3>
+        <p>
+          The rebuild required four pre-entry safety and correctness gates to pass against the legacy
+          tree <em>before</em> any restructuring milestone could begin — including eliminating accidental
+          live-execution paths and re-proving core math from first principles.
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <section class="block">
+    <h2>Scope &amp; honesty note</h2>
+    <div class="callout safe">
+      <h4>What this portfolio does not claim</h4>
+      <p class="small">
+        No claim of profitable live trading. No claim of production deployment. No claim that the
+        re-architecture is finished. Metrics are quoted from written artifacts with their provenance
+        attached; where a number is reported by a review rather than re-executed, the artifact says so
+        and this site repeats that caveat rather than dropping it. Complete algorithms, proprietary
+        heuristics, opportunity-selection logic, execution logic, and infrastructure topology are
+        deliberately not published — this site demonstrates engineering understanding, not reproducibility.
+      </p>
+    </div>
+  </section>
+
+</div>
+</main>
+
+<footer class="site">
+  <div class="wrap">
+    <div>Static site — no build step, no external dependencies, no runtime services.</div>
+    <div class="small">Research and educational software. Not financial advice. Not a live trading service.</div>
+  </div>
+</footer>
+
+</body>
+</html>

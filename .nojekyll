@@ -1,0 +1,3 @@
+# This file disables Jekyll processing on GitHub Pages.
+# The portfolio is plain static HTML/CSS/SVG — it must be served byte-exact,
+# with no build step and no file renaming (e.g. README.md -> README.html).

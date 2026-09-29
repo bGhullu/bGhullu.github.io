@@ -1,0 +1,638 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MEV System Re-Architecture — Work in Progress Case Study</title>
+<meta name="description" content="Work-in-progress case study: a milestone-controlled clean-room re-architecture of an MEV arbitrage system into an acyclic Rust workspace with enforced safety gates.">
+<link rel="icon" href="../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../styles.css">
+</head>
+<body>
+
+<header class="site">
+  <div class="wrap">
+    <div class="brand">EVM / MEV <span>Systems Engineering</span></div>
+    <nav class="top">
+      <a href="../index.html">Home</a>
+      <a href="#why">Why</a>
+      <a href="#architecture">Architecture</a>
+      <a href="#status">Status</a>
+      <a href="#remaining">Remaining work</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+<div class="wrap">
+
+  <div class="hero">
+    <div class="crumb"><a href="../index.html">Home</a> / Project 02</div>
+    <div class="wip-banner">
+      WORK IN PROGRESS
+      <small>This is an unfinished rebuild. Milestones are complete up to a point; later milestones are
+      planned, not built. Live execution is explicitly not authorized. Nothing on this page should be
+      read as production readiness.</small>
+    </div>
+    <div class="tag-row">
+      <span class="badge b-implemented">IMPLEMENTED</span>
+      <span class="badge b-verified">VERIFIED</span>
+      <span class="badge b-progress">IN PROGRESS</span>
+      <span class="badge b-planned">PLANNED</span>
+    </div>
+    <div class="kicker" style="margin-top:14px">Project 02 — Current Work</div>
+    <h1>MEV System Re-Architecture</h1>
+    <p class="lede">
+      A clean-room rebuild of the arbitrage system as a 24-member Rust workspace with an acyclic
+      dependency graph, one state authority, one profit ledger, an eleven-state execution state
+      machine, and a transaction send-path law — governed by milestone control, independent
+      adversarial review, and an explicit prohibition on live execution.
+    </p>
+  </div>
+
+  <section class="block" id="why">
+    <h2>Why the architecture evolved</h2>
+    <p class="sub">
+      The legacy system's defects were not bugs to patch; they were structural properties. Patching
+      them one at a time inside a single strongly-connected crate would have been undone by the next
+      change. So the constraints were extracted first, then the system was rebuilt under them.
+    </p>
+
+    <div class="table-scroll">
+      <table>
+        <thead><tr><th>Legacy finding</th><th>Constraint it became</th><th>Enforced by</th></tr></thead>
+        <tbody>
+          <tr>
+            <td>Single strongly-connected component, 40+ dependency cycles; layering was directory naming</td>
+            <td>The crate graph must be acyclic, and layer membership must be a property of the dependency edge</td>
+            <td>Spec-defined dependency DAG + CI tripwires rejecting forbidden edges</td>
+          </tr>
+          <tr>
+            <td>Runtime state authority split three ways, reconciled by hand-written invalidation</td>
+            <td>Exactly one runtime state authority, with a single writer and immutable snapshots</td>
+            <td>Rust ownership: the writer is the only object that can mutate; readers hold an immutable generation</td>
+          </tr>
+          <tr>
+            <td>Three-plus divergent profit calculators, none canonical</td>
+            <td>Exactly one profit ledger per candidate, computed sequentially across hops, never summed</td>
+            <td>Single type in the shared domain crate; a "no second ProfitLedger" tripwire</td>
+          </tr>
+          <tr>
+            <td>Detection and execution used two disagreeing simulation paths</td>
+            <td>One simulation owner; a bound, non-stale proof is mandatory before submission</td>
+            <td>Only one crate may issue a decision-grade call; the FSM requires a valid proof to advance</td>
+          </tr>
+          <tr>
+            <td>16 broadcast call sites, two dead-but-armed; recovery paths could broadcast</td>
+            <td>No send without six conditions, each fail-closed, with no alternate path</td>
+            <td>Crate boundaries, capability withholding, FSM-only reachability, negative tests, a grep tripwire</td>
+          </tr>
+          <tr>
+            <td>Seventeen ad-hoc event channels; three disjoint recovery components</td>
+            <td>Seven canonical channels with explicit loss policies; one L1&ndash;L4 recovery path</td>
+            <td>Channel-policy tests and a ban on adding channels outside the ratified list</td>
+          </tr>
+          <tr>
+            <td>Test counts that proved structure rather than truth</td>
+            <td>Tests must assert architectural invariants; copying the legacy suite is prohibited</td>
+            <td>Invariant-first test naming law and an explicit "no test-count theater" rule</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+  <section class="block" id="architecture">
+    <h2>Level 1 — System architecture</h2>
+    <p class="sub">
+      The system is a one-way pipeline from observation to an authorization boundary, with research
+      living outside the hot path and recovery supervising rather than participating.
+    </p>
+
+    <div class="diagram">
+      <img src="../assets/rearchitecture-flow.svg" alt="Re-architecture data flow: ingestion, single state store, market topology and quoting, route generation and validation, simulation proof, profit ledger, then the gated execution boundary containing the execution state machine, risk gate, nonce lease, signing and submission, with an event bus and recovery path below.">
+    </div>
+
+    <div class="flow"><b>State / market data</b>
+   &darr;
+<b>Discovery</b> — decode logs &rarr; apply to state · continuity + checkpoint identity
+   &darr;
+<b>Route generation</b> — deterministic over an immutable topology index
+   &darr;
+<b>Validation / identity</b> — eligibility, dedup, chain-independent route fingerprint
+   &darr;
+<b>Quote + state</b> — provenance-stamped quotes pinned to a state generation
+   &darr;
+<b>Profit evaluation</b> — one sequential ledger, guaranteed floor vs expected
+   &darr;
+<b>Opportunity decision</b> — T0 pre-screen, then T1 bound simulation proof
+   &darr;
+<b>Execution boundary</b> — FSM &rarr; risk gate &rarr; nonce lease &rarr; sign &rarr; submit
+   &darr;
+<b>Receipts · lineage · audit ledger · recovery</b></div>
+
+    <div class="callout safe">
+      <h4>The key structural idea</h4>
+      <p class="small">
+        Everything above the execution boundary is <em>analysis</em> and can be wrong without costing
+        anything except latency. Everything at and below the boundary is <em>authorization</em> and
+        must fail closed. The two are separated by an explicit seam — a bound simulation proof plus a
+        risk decision — rather than letting a profitable number cross the boundary on its own.
+        Profitability alone never authorizes execution.
+      </p>
+    </div>
+  </section>
+  <section class="block">
+    <h2>Level 2 — Component architecture</h2>
+    <p class="sub">
+      For the components where the interesting correctness constraints live: responsibility,
+      inputs/outputs, relationships, and why each exists — without publishing the algorithms.
+    </p>
+
+    <div class="table-scroll">
+      <table>
+        <thead><tr><th>Component</th><th>Responsibility</th><th>Input &rarr; Output</th><th>Correctness constraint</th></tr></thead>
+        <tbody>
+          <tr>
+            <td><strong>State store</strong></td>
+            <td>The single runtime authority for pool state, chain ancestry and generation identity</td>
+            <td>Ordered state commands &rarr; immutable, block-bound generation snapshots</td>
+            <td>Exactly one writer; readers never mutate. Every snapshot carries generation, block number and hash, and candidates die with their generation — so no stale opportunity survives a reorg.</td>
+          </tr>
+          <tr>
+            <td><strong>Ingestion / chain tracking</strong></td>
+            <td>Continuity, gap and divergence detection; canonical log ordering; checkpoint identity</td>
+            <td>Head + log stream &rarr; ordered, decoded state commands</td>
+            <td>Must be able to say "I am missing data" rather than silently apply an incomplete view. The checkpoint backend fails closed.</td>
+          </tr>
+          <tr>
+            <td><strong>Topology index</strong></td>
+            <td>Derived pool graph used for route search</td>
+            <td>Discovered pools &rarr; adjacency structure, rebuilt at boot</td>
+            <td>Derived, not authoritative — recomputed from state, never a second source of truth.</td>
+          </tr>
+          <tr>
+            <td><strong>Route generation</strong></td>
+            <td>Produces candidate cycles deterministically for a given state</td>
+            <td>Search root + snapshot &rarr; candidate route set in deterministic order</td>
+            <td>Determinism is the load-bearing property: the same generation yields the same routes, so results are replayable and comparable across runs.</td>
+          </tr>
+          <tr>
+            <td><strong>Route validation / identity</strong></td>
+            <td>Eligibility checks plus a chain-independent fingerprint identifying a route's shape</td>
+            <td>Candidate route &rarr; validated route + fingerprint</td>
+            <td>The fingerprint identifies pool, direction, fee and hop order without depending on chain, so evidence and fixtures stay comparable. It is treated as frozen.</td>
+          </tr>
+          <tr>
+            <td><strong>Quote engine</strong></td>
+            <td>Computes execution prices and stamps provenance</td>
+            <td>Route + state snapshot &rarr; quote with provenance record</td>
+            <td>Every quote records source, block, generation and freshness. Fixture-derived quotes are labeled as such and are structurally ineligible for live selection.</td>
+          </tr>
+          <tr>
+            <td><strong>Profit ledger</strong></td>
+            <td>The one economic authority for a candidate</td>
+            <td>Per-hop amounts, fees, flashloan cost, simulated gas &rarr; guaranteed floor and expected value</td>
+            <td>Hops chain sequentially — never summed. Gas comes from simulation of the actual calldata, never a floor constant. Only the guaranteed floor can authorize. Competition estimates must not contaminate it.</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <h3>The authorization half</h3>
+    <div class="table-scroll">
+      <table>
+        <thead><tr><th>Component</th><th>Responsibility</th><th>Input &rarr; Output</th><th>Correctness constraint</th></tr></thead>
+        <tbody>
+          <tr>
+            <td><strong>Simulation tiers</strong></td>
+            <td>A cheap pre-screen, a mandatory bound proof, and an end-to-end fork check</td>
+            <td>Candidate &rarr; pre-screen verdict, then bound proof, then fork validation</td>
+            <td>The bound proof must be valid and non-stale before submission; a bare read-only call cannot substitute for it. The simulator consumes state — it never becomes a state authority.</td>
+          </tr>
+          <tr>
+            <td><strong>Execution state machine</strong></td>
+            <td>The only component allowed to advance a candidate toward submission</td>
+            <td>Opportunity event &rarr; ordered progress states through to confirmed or terminal</td>
+            <td>Eleven progress states with defined exit conditions, timeouts and failure behavior. Built calldata must be byte-equal to the simulated calldata. No other route reaches submission.</td>
+          </tr>
+          <tr>
+            <td><strong>Risk gate / mandate</strong></td>
+            <td>Human-set caps, allowlists, expiry and kill-switch, checked before signing</td>
+            <td>Candidate + mandate &rarr; allow or reject, with checked limits recorded</td>
+            <td>The mandate cannot be modified by an automated agent. Rejections record what was checked, so an authorization decision is auditable afterwards.</td>
+          </tr>
+          <tr>
+            <td><strong>Nonce / signing / submission</strong></td>
+            <td>Exclusive lease per attempt; signer chosen by explicit configuration; the only broadcast site</td>
+            <td>Approved candidate &rarr; leased nonce &rarr; signature &rarr; accepted / rejected / unknown</td>
+            <td>Lease exclusivity prevents duplicate submission under concurrency. No fallback signer. Submission must distinguish rejected from unknown, because "unknown" forces reconciliation rather than retry.</td>
+          </tr>
+          <tr>
+            <td><strong>Recovery</strong></td>
+            <td>One graduated path for provider loss, interruption, corruption and reorgs</td>
+            <td>Failure signal &rarr; graduated recovery decision, executed against state</td>
+            <td>Recovery <em>decides</em>; state executes. Recovery paths inherit authorization and re-assert the gate — a failure path is never an exemption.</td>
+          </tr>
+          <tr>
+            <td><strong>Audit ledger &amp; lineage</strong></td>
+            <td>Append-only hash-chained record of decisions, plus a per-candidate provenance chain</td>
+            <td>Decisions and lifecycle events &rarr; durable, verifiable history</td>
+            <td>Appends must not require re-verifying the whole chain. Lineage must be able to explain why a candidate existed and what it was worth at each step.</td>
+          </tr>
+          <tr>
+            <td><strong>Research platform</strong></td>
+            <td>Strategy registry, run cards, attribution and decay — the offline loop</td>
+            <td>Execution records and exports &rarr; approved parameter sets</td>
+            <td>The only return path into the engine is an approved parameter set. Research must have no dependency edge to signing, nonce or submission. Approved versions are immutable.</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="callout">
+      <h4>Ownership rules that make the architecture enforceable</h4>
+      <ul class="tight small">
+        <li>One writer per authority: the state writer, the nonce engine and the gas model are each single-writer, enforced by crate ownership rather than by convention.</li>
+        <li>The execution crate is the sole consumer of opportunities. There is no "orders" channel — orders are internal to it.</li>
+        <li>Ingestion does not know recovery exists; both depend only on the shared bus and domain types.</li>
+        <li>Strategy never signs and never mutates a candidate after handoff — after handoff, the candidate is execution-owned.</li>
+        <li>Simulation owns all three tiers; no other crate may issue a decision-grade chain call.</li>
+        <li>Signing owns both signer implementations; selection is explicit configuration, never a runtime fallback.</li>
+        <li>Forbidden edges are CI-enforced: research may not reach execution, signing, nonce or submission; strategy may not reach signing; state may not depend on ingestion or recovery.</li>
+      </ul>
+    </div>
+
+    <div class="callout safe">
+      <h4>The transaction send-path law</h4>
+      <p class="small">
+        No send without all six conditions, evaluated in order, each fail-closed:
+      </p>
+      <ol class="tight small">
+        <li><strong>Authorized live mode</strong> — the execution gate is open, and the capability is withheld when it is not (no signer or transaction manager is attached at all).</li>
+        <li><strong>Valid simulation proof</strong> — bound to <em>this</em> candidate, non-stale.</li>
+        <li><strong>Valid economics</strong> — the post-simulation guaranteed floor is non-negative, and the minimum-output value derives from that same ledger.</li>
+        <li><strong>Valid risk decision</strong> — the mandate check returns allow, with the checked limits recorded; caps and kill-switch clear.</li>
+        <li><strong>Valid nonce lease</strong> — an exclusive lease for this attempt.</li>
+        <li><strong>Valid signer/relay authorization</strong> — an explicitly configured signer, with relay backends only where their evidence requirement is satisfied.</li>
+      </ol>
+      <p class="small">
+        No alternate path is allowed. Enforcement is layered: crate boundaries mean only one crate can
+        broadcast, capability withholding means there is nothing to broadcast <em>with</em>, the state
+        machine is the only route to the submitted state, negative tests assert that no unauthorized
+        send exists, and a CI tripwire bans the raw broadcast call outside its owning crate.
+        Consequence paths — replacement, cancellation, reorg-driven replacement — inherit
+        authorization and re-assert the gate rather than inheriting an exemption.
+      </p>
+    </div>
+
+    <div class="callout">
+      <h4>Testing law</h4>
+      <p class="small">
+        Tests must prove architectural truths, not reproduce legacy structure. Naming enforces this:
+        <code>test_coordinator_does_y()</code> becomes
+        <code>assert_t1_required_before_submission()</code>;
+        <code>test_unified_system_does_z()</code> becomes
+        <code>assert_single_state_store_authority()</code>. Success is measured by invariant coverage,
+        not test-count preservation, and copying the legacy suite forward is explicitly prohibited as
+        "test-count theater."
+      </p>
+    </div>
+  </section>
+  <section class="block" id="status">
+    <h2>What has been implemented and verified</h2>
+    <p class="sub">
+      The rebuild runs on milestone control. Nothing counts as done until an implementation report,
+      an independent adversarial gate, and a closure adjudication all exist for it. Below is the
+      current state, exactly as the latest closure artifacts record it.
+    </p>
+
+    <div class="callout safe">
+      <h4>Live execution posture — unchanged throughout</h4>
+      <p class="small">
+        Every closure artifact in this project repeats the same statement:
+        <strong>live execution is not authorized.</strong> No report anywhere in the record claims live
+        readiness. The signing, submission, nonce, execution, simulation, recovery and API crates are
+        one-line scaffolds; no signer or key-handling surface exists in the engine; and a guard test
+        asserts that production source contains no signing, sending or raw-key tokens. A
+        repository-wide search for a live-authorization assertion returns nothing.
+      </p>
+    </div>
+
+    <div class="table-scroll">
+      <table>
+        <thead><tr><th>Stage</th><th>What it delivered</th><th>Status</th></tr></thead>
+        <tbody>
+          <tr>
+            <td><strong>Safety containment gate</strong></td>
+            <td>Complete inventory of every broadcast and sign site; gating verified by source inspection; consequence paths hardened to re-assert the gate; dead-but-armed senders recorded for deletion</td>
+            <td><span class="badge b-verified">VERIFIED</span></td>
+          </tr>
+          <tr>
+            <td><strong>Core correctness gate</strong></td>
+            <td>V3 tick traversal, liquidity and swap math re-derived from the protocol reference: golden, differential and termination/property suites written from first principles, nothing copied from legacy tests</td>
+            <td><span class="badge b-verified">VERIFIED</span></td>
+          </tr>
+          <tr>
+            <td><strong>Test baseline gate</strong></td>
+            <td>Full suite made to complete with zero unexplained failures; every ignored test individually inspected and classified; no silent ignore concealing a core defect</td>
+            <td><span class="badge b-verified">VERIFIED</span></td>
+          </tr>
+          <tr>
+            <td><strong>Independent adversarial gate</strong></td>
+            <td>A separate reviewer rebuilt the send-capability graph from fresh searches, re-ran every test surface, and reconciled the count discrepancy — while publishing its own independence caveat</td>
+            <td><span class="badge b-verified">VERIFIED</span></td>
+          </tr>
+          <tr>
+            <td><strong>Workspace foundation</strong></td>
+            <td>24-member workspace scaffold, acyclic dependency graph, architecture tripwires live, legacy tree preserved as a rollback point rather than destroyed</td>
+            <td><span class="badge b-implemented">IMPLEMENTED</span> <span class="badge b-verified">VERIFIED</span></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <h3>Build milestones</h3>
+    <div class="table-scroll">
+      <table>
+        <thead><tr><th>Milestone</th><th>What it delivered</th><th>Status</th></tr></thead>
+        <tbody>
+          <tr>
+            <td><strong>Core foundations</strong></td>
+            <td>Shared domain types, math, observability, event bus and storage — including the profit ledger, mandate and audit ledger types. An independent post-remediation pass confirmed four original blockers genuinely fixed, among them replacing non-cryptographic hashing in the audit ledger</td>
+            <td><span class="badge b-verified">VERIFIED</span></td>
+          </tr>
+          <tr>
+            <td><strong>State &amp; ingestion</strong></td>
+            <td>Single-writer state store with generation snapshots, undo journal and rollback; chain tracker with continuity, gap and divergence detection; V2 protocol decode with real-mainnet goldens</td>
+            <td><span class="badge b-verified">VERIFIED</span></td>
+          </tr>
+          <tr>
+            <td><strong>Market, strategy &amp; gas</strong></td>
+            <td>Topology index, quote engine with provenance, deterministic route generation, validation and identity, T0 pre-filter — and a route-search throughput gate that passed only after failing review twice and being independently re-failed once</td>
+            <td><span class="badge b-verified">VERIFIED</span></td>
+          </tr>
+          <tr>
+            <td><strong>Protocol encoding &amp; flashloan planning</strong></td>
+            <td>Curve math and adapter, a flashloan plan builder, and a canonical calldata encoder — with byte-exact goldens verified three independent ways: the specification, the frozen contract's own decoder, and an external decoder</td>
+            <td><span class="badge b-verified">VERIFIED</span></td>
+          </tr>
+          <tr>
+            <td><strong>Fork-backed acceptance</strong></td>
+            <td>End-to-end execution on a pinned local fork: two multi-hop golden routes executed with realized output matching prediction at every hop, plus seven fail-closed negative cases each rejected by its intended gate — identical across three fresh sessions</td>
+            <td><span class="badge b-verified">VERIFIED</span></td>
+          </tr>
+          <tr>
+            <td><strong>Simulation &amp; risk gate</strong></td>
+            <td>Bound simulation proofs, override-accuracy validation and the mandate check</td>
+            <td><span class="badge b-planned">PLANNED</span></td>
+          </tr>
+          <tr>
+            <td><strong>Execution, nonce, signing, submission</strong></td>
+            <td>The eleven-state state machine, lease lifecycle, signer, and backends with send-path-law tests and an end-to-end dry run on a fork</td>
+            <td><span class="badge b-planned">PLANNED</span></td>
+          </tr>
+          <tr>
+            <td><strong>Recovery &amp; API</strong></td>
+            <td>Graduated recovery with restart reconciliation, plus a read-only API</td>
+            <td><span class="badge b-planned">PLANNED</span></td>
+          </tr>
+          <tr>
+            <td><strong>Hardening, validation, research, security, final validation</strong></td>
+            <td>Failure injection and latency verification; end-to-end validation evidence; the research platform; zone isolation and negative-capability suites; an independent adversarial re-verification of the whole refactor</td>
+            <td><span class="badge b-planned">PLANNED</span></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="metrics">
+      <div class="metric"><div class="v">24</div><div class="k">workspace members (22 crates + 2 binaries)</div></div>
+      <div class="metric"><div class="v">460 / 0 / 0</div><div class="k">workspace tests across 61 targets</div></div>
+      <div class="metric"><div class="v">13 / 13</div><div class="k">architecture tripwires passing</div></div>
+      <div class="metric"><div class="v">7 / 7</div><div class="k">fail-closed negative cases rejected as intended</div></div>
+    </div>
+
+    <div class="callout">
+      <h4>How seriously the review process takes itself</h4>
+      <p class="small">
+        A closure review found that the project's own specification was inconsistent with its own
+        ratified amendment — the amendment's canonical text was absent from the committed documents
+        while later reports cited it as law. The verdict was therefore
+        <strong>"milestone NOT closed"</strong>, with the sole blocker classified as a canonical-record
+        defect rather than an engineering failure. A bounded restoration task then repaired it, and the
+        tagging decision was explicitly deferred until the record was consistent. The milestone was not
+        declared closed on a technicality. Publishing that outcome is the point.
+      </p>
+    </div>
+  </section>
+  <section class="block">
+    <h2>Important engineering decisions</h2>
+    <div class="table-scroll">
+      <table>
+        <thead><tr><th>Decision</th><th>Choice</th><th>Reasoning</th></tr></thead>
+        <tbody>
+          <tr>
+            <td><strong>Rebuild rather than refactor in place</strong></td>
+            <td>Preserve the legacy tree intact as a rollback point, then build a new workspace alongside it</td>
+            <td>A single strongly-connected crate cannot be incrementally layered — every edit is fighting the dependency graph. Preservation also keeps the legacy suite available as forensic evidence without letting it become the acceptance criterion.</td>
+          </tr>
+          <tr>
+            <td><strong>Pre-entry safety gates before any restructuring</strong></td>
+            <td>Four gates — safety containment, core correctness, test baseline, independent re-verification — had to pass against the legacy tree before milestone 0 could start</td>
+            <td>Refactoring a tree with accidental live-send paths propagates those paths. Safety was made a precondition, not a follow-up.</td>
+          </tr>
+          <tr>
+            <td><strong>Chain-agnostic core with an explicit target profile</strong></td>
+            <td>Chain identity, venue deployments and fork identity live in an explicit, evidence-backed profile; a target chain is declared rather than hardcoded across the codebase</td>
+            <td>The legacy design assumed a chain implicitly in many places. Making it explicit also enables a fail-closed capability model: unknown, missing or unverified capability &rArr; deny.</td>
+          </tr>
+          <tr>
+            <td><strong>Frozen executor contract</strong></td>
+            <td>The on-chain executor is pinned by content identity, and every fork evidence record captures chain, block, hash, executor revision, deployment address and profile revision as one tuple</td>
+            <td>A block number alone is not sufficient provenance. If any element of the tuple differs, the evidence does not apply — this prevents "the test passed, so it works" on state that has silently moved.</td>
+          </tr>
+          <tr>
+            <td><strong>One canonical encoder</strong></td>
+            <td>A single encoder authority per protocol family; protocol-specific optimizations may live beneath it but may not create a second semantic definition of the same transaction</td>
+            <td>Multiple competing encoders were one of the legacy's "five universes." The rule is structural: one semantic definition, one authority.</td>
+          </tr>
+          <tr>
+            <td><strong>Determinism as a first-class requirement</strong></td>
+            <td>Route generation, candidate ordering and encoding are all deterministic, and evidence records include digests so runs can be compared byte-for-byte</td>
+            <td>Non-deterministic evidence cannot be replayed or disputed. Determinism is what makes an independent re-verification possible at all.</td>
+          </tr>
+          <tr>
+            <td><strong>Legacy tests are forensic, not normative</strong></td>
+            <td>Expected values derive from the protocol oracle or from hand-derived integers — never from copying an existing test's expectation</td>
+            <td>Two golden values that failed were corrected against the oracle, never the reverse. Otherwise a wrong legacy expectation silently becomes the specification.</td>
+          </tr>
+          <tr>
+            <td><strong>Human authority stays human</strong></td>
+            <td>Risk mandates cannot be modified by an automated agent; approved strategy versions are immutable; research has no dependency path to execution; live enablement requires an explicit human act</td>
+            <td>The system is designed so that an agent — including the one building it — cannot grant itself execution authority.</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+  <section class="block">
+    <h2>Forward capability ledger</h2>
+    <p class="sub">
+      A governance mechanism worth highlighting: researched capabilities are given a persistent
+      identity (<code>C1</code>&ndash;<code>C8</code>) that survives milestone boundaries, so a capability
+      is never silently dropped just because the active milestone does not implement it. Each carries a
+      status, an intended owner, prerequisites, an acceptance-evidence obligation, and an explicit
+      disposition when deferred or rejected.
+    </p>
+
+    <div class="table-scroll">
+      <table>
+        <thead><tr><th>ID</th><th>Capability</th><th>Status</th><th>Disposition</th></tr></thead>
+        <tbody>
+          <tr>
+            <td class="num">C1</td>
+            <td>Lower-latency state transport via colocated infrastructure</td>
+            <td><span class="badge b-documented">ARCHITECTURALLY PRESERVED</span></td>
+            <td>Forward-owned, non-blocking. Must enter through the existing state-source boundary — a faster transport is a <em>source</em> of state, never a second authority.</td>
+          </tr>
+          <tr>
+            <td class="num">C2</td>
+            <td>Local EVM simulation backend as an alternative to remote state-override calls</td>
+            <td><span class="badge b-planned">PROPOSED</span></td>
+            <td>Forward-owned to the simulation milestone, subject to an explicit backend ratification decision. Must not make the mandatory bound proof optional just because it is faster.</td>
+          </tr>
+          <tr>
+            <td class="num">C3</td>
+            <td>Pending / preconfirmation / sequencer visibility</td>
+            <td><span class="badge b-planned">PROPOSED</span></td>
+            <td>Deferred with explicit future ownership. Provisional data must enter as an observation and can never silently become execution authorization.</td>
+          </tr>
+          <tr>
+            <td class="num">C4</td>
+            <td>Incremental search over state-affected roots instead of a full scan every block</td>
+            <td><span class="badge b-progress">RATIFIED, NOT IMPLEMENTED</span></td>
+            <td>Ratified; forward implementation required before latency verification. Must be an optimization of search <em>ordering</em> only, with a full-scan fallback and candidate-set equivalence proven.</td>
+          </tr>
+          <tr>
+            <td class="num">C5</td>
+            <td>Bounded parallel evaluation of independent candidates</td>
+            <td><span class="badge b-progress">RATIFIED, NOT IMPLEMENTED</span></td>
+            <td>Ratified; forward implementation required before latency verification. Must use a dedicated bounded CPU pool, never unbounded runtime workers, and must be deterministic.</td>
+          </tr>
+          <tr>
+            <td class="num">C6</td>
+            <td>Compact protocol encoding knowledge in the hot path</td>
+            <td><span class="badge b-implemented">ARCHITECTURALLY INTEGRATED</span></td>
+            <td>Represented by the canonical encoder boundary; the protocol-encoding milestone is its principal realization. Optimizations may exist beneath the authority but never beside it.</td>
+          </tr>
+          <tr>
+            <td class="num">C7</td>
+            <td>Direct node / database / DEX-sync derived state sources</td>
+            <td><span class="badge b-planned">PROPOSED</span></td>
+            <td>Future infrastructure capability, non-blocking. Must remain a derived input source feeding the canonical state path — explicitly not a competing runtime authority.</td>
+          </tr>
+          <tr>
+            <td class="num">C8</td>
+            <td>Low-level gas / assembly optimization</td>
+            <td><span class="badge b-planned">DEFERRED WITH OWNER</span></td>
+            <td>Intentionally deferred until correctness is stable, gas baselines exist and bottlenecks are measured. Evidence must show before-vs-after gas plus behavioral equivalence. Must not become an earlier milestone blocker, and must not be silently forgotten.</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="callout">
+      <h4>Why this matters more than it looks</h4>
+      <p class="small">
+        The failure mode it prevents is familiar: a promising optimization gets researched, written up,
+        and then quietly disappears because no current milestone owns it. Here every capability has a
+        permanent identity, a status, an owner and an evidence obligation — so "deferred" is a recorded
+        decision with a return path, not an omission.
+      </p>
+    </div>
+  </section>
+  <section class="block" id="remaining">
+    <h2>Remaining work &amp; current limitations</h2>
+    <p class="sub">Stated plainly. This is the part that keeps the project honest.</p>
+
+    <div class="table-scroll">
+      <table>
+        <thead><tr><th>Limitation</th><th>Detail</th></tr></thead>
+        <tbody>
+          <tr>
+            <td><strong>The rebuild is only partially built</strong></td>
+            <td>Foundations, state and ingestion, market and strategy, and protocol encoding are implemented and gated. Simulation and risk gating, the execution state machine, nonce, signing, submission, recovery and the API are specified but not implemented — those crates are one-line scaffolds.</td>
+          </tr>
+          <tr>
+            <td><strong>The engine cannot run end to end</strong></td>
+            <td>There is no engine loop. Route and quote generation exist and are tested in isolation, but nothing yet drives a candidate from detection through simulation to a decision in a running process.</td>
+          </tr>
+          <tr>
+            <td><strong>Live execution is not authorized</strong></td>
+            <td>Repeatedly and explicitly, across every closure artifact. There is no signing capability, no broadcaster, no key-handling surface in the engine, and no report claiming otherwise. This is a deliberate governance state, not an oversight.</td>
+          </tr>
+          <tr>
+            <td><strong>The milestone is not closed</strong></td>
+            <td>All individual stages are recorded as closed at the engineering level, but the overall milestone verdict is <em>not closed</em>, pending a canonical-record repair and an owner tagging decision. The restoration work was completed in the working tree; the commit and tag remain owner actions.</td>
+          </tr>
+          <tr>
+            <td><strong>Several capabilities are ratified but unimplemented</strong></td>
+            <td>Incremental affected-state search and bounded parallel evaluation are ratified and required before latency verification, but not yet built. Both are tracked with acceptance criteria rather than left implicit.</td>
+          </tr>
+          <tr>
+            <td><strong>Performance evidence is milestone-era</strong></td>
+            <td>The route-search throughput gate passed with a worst-case block comfortably inside its budget, but that measurement belongs to its milestone. It has not been re-run recently and should not be read as a current performance claim.</td>
+          </tr>
+          <tr>
+            <td><strong>Only one target chain profile is populated</strong></td>
+            <td>The core is designed to be chain-agnostic with an explicit target profile, but only one profile carries a complete evidence tuple. Another chain would require its own.</td>
+          </tr>
+          <tr>
+            <td><strong>No live revenue, no audit, no deployment</strong></td>
+            <td>None of these exist. No live trading, no third-party security audit, no production deployment. Any claim to the contrary would be unsupported by the record.</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+  <section class="block">
+    <h2>Current status at a glance</h2>
+    <div class="table-scroll">
+      <table>
+        <thead><tr><th>Dimension</th><th>Status</th><th>Level</th></tr></thead>
+        <tbody>
+          <tr><td>Specification &amp; ratified architecture</td><td>Complete, reconciled, and consistent with its ratified amendments after a repair pass</td><td><span class="badge b-documented">DOCUMENTED</span></td></tr>
+          <tr><td>Workspace structure &amp; dependency discipline</td><td>Built, compiling, and tripwired</td><td><span class="badge b-verified">VERIFIED</span></td></tr>
+          <tr><td>Pre-entry safety &amp; correctness gates</td><td>All four passed against the legacy tree, with an independent re-derivation</td><td><span class="badge b-verified">VERIFIED</span></td></tr>
+          <tr><td>State, market, route, quote &amp; encoding layers</td><td>Implemented and independently gated</td><td><span class="badge b-verified">VERIFIED</span></td></tr>
+          <tr><td>Fork-based end-to-end contract acceptance</td><td>Passed on a pinned fork, with fail-closed negatives proven</td><td><span class="badge b-verified">VERIFIED</span></td></tr>
+          <tr><td>Milestone closure</td><td>Stages closed at engineering level; overall milestone <strong>not closed</strong>, pending record-repair completion and owner tagging</td><td><span class="badge b-progress">IN PROGRESS</span></td></tr>
+          <tr><td>Simulation, risk gate, execution, nonce, signing, submission, recovery, API</td><td>Specified in detail; not implemented</td><td><span class="badge b-planned">PLANNED</span></td></tr>
+          <tr><td>Live trading / production deployment</td><td>Explicitly not authorized; capability surface absent</td><td><span class="badge b-not">NOT ESTABLISHED</span></td></tr>
+          <tr><td>Profitability evidence</td><td>None. No live or production revenue claim exists</td><td><span class="badge b-not">NOT ESTABLISHED</span></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="callout wip">
+      <h4>Summary</h4>
+      <p class="small">
+        <strong>This is a work in progress.</strong> The unglamorous part — establishing safety,
+        correctness baselines, dependency discipline, evidence conventions, and a review process willing
+        to say "not closed" — is genuinely done and independently checked. The execution half of the
+        system is specified in detail and not yet built. It does not run end to end, it does not trade,
+        and it is not authorized to.
+      </p>
+    </div>
+  </section>
+
+</div>
+</main>
+
+<footer class="site">
+  <div class="wrap">
+    <div><a href="../index.html">&larr; Back to portfolio home</a> &nbsp;·&nbsp; <a href="legacy-arbitrage-system.html">Project 01 — Legacy system</a></div>
+    <div class="small">Static site — no build step, no external dependencies, no runtime services. Research and educational software. Not financial advice.</div>
+  </div>
+</footer>
+
+</body>
+</html>

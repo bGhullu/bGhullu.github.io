@@ -1,0 +1,336 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Legacy MEV Arbitrage System — Case Study</title>
+<meta name="description" content="Case study: an event-driven, multi-DEX MEV arbitrage system in Rust with a Solidity flashloan executor.">
+<link rel="icon" href="../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../styles.css">
+</head>
+<body>
+
+<header class="site">
+  <div class="wrap">
+    <div class="brand">EVM / MEV <span>Systems Engineering</span></div>
+    <nav class="top">
+      <a href="../index.html">Home</a>
+      <a href="#architecture">Architecture</a>
+      <a href="#challenges">Challenges</a>
+      <a href="#verification">Verification</a>
+      <a href="re-architecture.html">Re-architecture &rarr;</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+<div class="wrap">
+
+  <div class="hero">
+    <div class="crumb"><a href="../index.html">Home</a> / Project 01</div>
+    <div class="tag-row">
+      <span class="badge b-implemented">IMPLEMENTED</span>
+      <span class="badge b-verified">VERIFIED</span>
+      <span class="badge b-documented">DOCUMENTED</span>
+    </div>
+    <div class="kicker" style="margin-top:14px">Project 01 — Established System</div>
+    <h1>Legacy MEV Arbitrage System</h1>
+    <p class="lede">
+      An event-driven arbitrage system that detects mispricings for the same asset across decentralized
+      exchanges and captures the difference atomically inside a single flashloan-wrapped transaction —
+      written in Rust, with an on-chain Solidity executor and a monitoring dashboard.
+    </p>
+  </div>
+
+  <section class="block">
+    <h2>The problem</h2>
+    <p class="sub">
+      Decentralized exchanges price the same asset differently at the same moment. Capturing that
+      difference is not a detection problem — it is a distributed-systems and correctness problem
+      wearing a finance costume.
+    </p>
+
+    <p>To realize an arbitrage you must, in one atomic transaction and under adversarial conditions:</p>
+    <ul class="tight">
+      <li><strong>Observe</strong> fresh pool state fast enough that it has not already moved.</li>
+      <li><strong>Reason</strong> about execution price across pools with genuinely different math — constant-product reserves, concentrated-liquidity tick spaces, and stable-swap invariant curves.</li>
+      <li><strong>Quote</strong> reliably. The core repeated question is <em>"if I send X tokens through this pool, how many come out?"</em> — and a wrong answer here produces a losing trade, not a missed one.</li>
+      <li><strong>Verify</strong> the result against real chain state before spending gas, under a strict per-block latency budget.</li>
+      <li><strong>Execute</strong> without exposing capital to front-running, sandwiching, or a revert that costs gas and yields nothing.</li>
+    </ul>
+
+    <div class="callout">
+      <h4>Why quoting is the crux</h4>
+      <p class="small">
+        The engineering record defines this explicitly: detection requires answering, repeatedly,
+        <em>"if I send X tokens through this pool, how many tokens come out?"</em> That is quoting —
+        and every downstream decision (route ranking, profit evaluation, execution authorization)
+        inherits its accuracy. Quoting errors do not degrade gracefully.
+      </p>
+    </div>
+  </section>
+  <section class="block" id="architecture">
+    <h2>System overview</h2>
+    <p class="sub">
+      A single Rust crate built as cooperating layers: an ingestion plane that keeps pool state current,
+      a decision plane that finds and ranks candidates, and an execution plane that validates, signs,
+      and submits — coordinated over typed async channels.
+    </p>
+
+    <div class="diagram">
+      <img src="../assets/legacy-flow.svg" alt="Legacy system data flow from RPC ingestion through pool state, route generation, strategy detection, quoting, execution planning, simulation, execution gate, signing and submission, to monitoring and recovery.">
+    </div>
+
+    <div class="flow"><b>WS / HTTP RPC</b>
+  &darr;
+<b>Block + log ingestion</b> &rarr; pool discovery · token metadata
+  &darr;
+<b>Unified pool state</b> (reserves · slots/ticks · balances) &rarr; atomic snapshot
+  &darr;
+<b>Route generation</b> — primary + fallback routes (beam search over the token graph)
+  &darr;
+<b>Strategy detection</b> — cross-DEX · triangular · multi-hop
+  &darr;
+<b>Quote for ranking</b> &rarr; <b>requote on a fresh snapshot at execution time</b>
+  &darr;
+<b>Simulation</b> (fork / state-override) &rarr; gas modelling
+  &darr;
+<b>Execution gate</b> — dry-run kill switch, fail-closed
+  &darr;
+<b>Sign &rarr; submit</b> — bundle and direct backends
+  &darr;
+<b>Receipts · reorg recovery · RBF · monitoring</b></div>
+
+    <div class="callout safe">
+      <h4>A deliberate safety property worth calling out</h4>
+      <p class="small">
+        Route generation returns values that are explicitly documented as conservative estimates,
+        <em>not</em> executable amounts, used only for ranking. The execution layer always recalculates
+        against a fresh atomic snapshot before acting. That is a correct defensive design: it prevents
+        a stale ranking number from ever becoming a committed spend.
+      </p>
+    </div>
+    <h3>Major components</h3>
+    <div class="table-scroll">
+      <table>
+        <thead><tr><th>Area</th><th>Responsibility</th><th>Notes</th></tr></thead>
+        <tbody>
+          <tr><td><strong>Event routing</strong></td><td>Type-safe event router plus bounded async channels between subsystems</td><td>Decouples ingestion from detection from execution</td></tr>
+          <tr><td><strong>Provider layer</strong></td><td>WebSocket/HTTP failover with connection pooling for reads and submission</td><td>WebSocket loss is an availability event, not a silent degradation</td></tr>
+          <tr><td><strong>Unified pool state</strong></td><td>Multi-DEX pool state with TTL caches and event-driven invalidation</td><td>Later identified as one of three competing state authorities</td></tr>
+          <tr><td><strong>Strategy engine</strong></td><td>Cross-DEX, triangular, and multi-hop detection orchestrated by a strategy service</td><td>Each strategy is a client of shared market data</td></tr>
+          <tr><td><strong>Market / quoting</strong></td><td>Pool abstractions, price-impact and fee calculation, protocol-specific ABI encoders</td><td>Encoder families for V2, V3, Curve, Balancer v1/v2 and Maverick</td></tr>
+          <tr><td><strong>Math</strong></td><td>V2/V3 arithmetic, tick and bitmap traversal, full-precision math, stable-swap solvers</td><td>The most portable asset in the codebase</td></tr>
+          <tr><td><strong>Simulation</strong></td><td>Fork-based and state-override simulation for pre-flight verification</td><td>Two distinct paths existed — see challenges</td></tr>
+          <tr><td><strong>Execution</strong></td><td>Planning, EIP-1559 gas estimation, approval management, transaction monitoring</td><td>All writes funnel through a single execution gate</td></tr>
+          <tr><td><strong>On-chain executor</strong></td><td>Owner-gated flashloan arbitrage executor with lending-protocol and vault callbacks</td><td>Enforces per-hop minimum output and a profit floor on-chain</td></tr>
+          <tr><td><strong>Recovery</strong></td><td>Reorg detection, nonce management with rollback, balance tracking</td><td>Three separate components — consolidated in the rebuild</td></tr>
+          <tr><td><strong>Observability</strong></td><td>REST + WebSocket API, metrics, health monitoring, React dashboard</td><td>API hardcodes a read-only posture</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+  <section class="block" id="challenges">
+    <h2>Engineering challenges</h2>
+    <p class="sub">
+      These are findings from the project's own structural analysis — written down as findings, not
+      glossed over. They are also the direct reason the re-architecture exists.
+    </p>
+
+    <div class="table-scroll">
+      <table>
+        <thead><tr><th>Challenge</th><th>What the analysis found</th><th>Why it is hard</th></tr></thead>
+        <tbody>
+          <tr>
+            <td><strong>Layering without enforcement</strong></td>
+            <td>The compile-time dependency graph collapsed into a single strongly-connected component with 40+ distinct dependency cycles. The crate was layered <em>by directory name only</em>.</td>
+            <td>Rust module visibility enforces nothing about layering when everything can reach everything. Any rule had to be cultural rather than mechanical.</td>
+          </tr>
+          <tr>
+            <td><strong>Competing internal "universes"</strong></td>
+            <td>At least five parallel subsystems grew inside one crate: the production spine, a self-contained path-merging subsystem with its own fee calculator and planner, a second executor lineage, seven distinct simulation systems, and three separate event taxonomies.</td>
+            <td>Each was locally reasonable. Together they meant there was no single answer to "who decides the profit number?"</td>
+          </tr>
+          <tr>
+            <td><strong>Split state authority</strong></td>
+            <td>Runtime state authority was triplicated across pool-system caches, a separate pool-state cache, and SQLite recovery state, reconciled by explicit invalidation paths rather than ownership.</td>
+            <td>Correctness depended on invalidation staying in sync by hand — the exact thing invalidation logic tends to get wrong under failure.</td>
+          </tr>
+          <tr>
+            <td><strong>Detection vs execution divergence</strong></td>
+            <td>Two simulation/routing paths existed that did not communicate: detection used token-graph estimation, execution used atomic-snapshot simulation. Gas and slippage could diverge between them.</td>
+            <td>The result is false positives — candidates that look profitable in detection and are not at execution. The record explicitly flagged opportunities detected as profitable that fail at execution.</td>
+          </tr>
+          <tr>
+            <td><strong>Heterogeneous pool math</strong></td>
+            <td>Constant-product, concentrated-liquidity (tick/bitmap/word-boundary traversal), and stable-swap invariant curves all had to produce correct, terminating, non-panicking results at exact boundaries.</td>
+            <td>Boundary cases in V3 traversal can loop forever. Termination has to be structural — a defensive bound is a failure signal, not the mechanism.</td>
+          </tr>
+          <tr>
+            <td><strong>Safety of the send path</strong></td>
+            <td>A complete inventory found 16 broadcast call sites plus independent sign sites, including two "dead-but-armed" senders with no live callers.</td>
+            <td>A send path with no callers today is still a send path. Capability has to be withheld structurally, not by convention.</td>
+          </tr>
+          <tr>
+            <td><strong>Reorgs and nonce integrity</strong></td>
+            <td>Nonce management, balance tracking, and reorg recovery had to interoperate with replacement/cancel transactions under chain re-organization.</td>
+            <td>Recovery logic running in a failure path must not itself be able to broadcast without re-asserting authorization.</td>
+          </tr>
+          <tr>
+            <td><strong>Latency budget</strong></td>
+            <td>Search must complete inside the block-time budget at worst-case pool counts, with a replay harness over recorded blocks.</td>
+            <td>Throughput gates that pass on average fail at p99. The gate is written as a worst-case, per-block budget.</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>Important design decisions</h3>
+    <ul class="tight">
+      <li><strong>Atomic snapshots for requote.</strong> Ranking uses estimates; execution re-derives from a consistent snapshot. Correctness never depends on a stale ranking value.</li>
+      <li><strong>Fork-based simulation for final confidence.</strong> State-override simulation answers "what would this call do"; a pinned fork answers "does the whole transaction work end to end."</li>
+      <li><strong>Single execution gate with capability withholding.</strong> The gate predicate defaults fail-closed, and the transaction manager is simply not attached when the gate is closed — so a bypassing call site has nothing to call.</li>
+      <li><strong>On-chain defense in depth.</strong> The executor re-checks per-hop minimum output and a profit floor on-chain, so a profitable-but-worse-than-predicted outcome reverts rather than settling.</li>
+      <li><strong>Protocol encoders kept fail-closed.</strong> Unsupported protocol calldata encoding refuses rather than guessing, so an unimplemented venue cannot silently produce bytes.</li>
+      <li><strong>Conservative ranking values.</strong> Route outputs are documented as non-executable ranking scores, forcing revalidation at execution time.</li>
+    </ul>
+  </section>
+  <section class="block" id="verification">
+    <h2>Verification &amp; testing evidence</h2>
+    <p class="sub">
+      All figures below are quoted from written test-baseline and independent-review artifacts.
+      The baseline was produced against the legacy tree during the rebuild's pre-entry safety gates,
+      which is the most recent and most independently-checked measurement of this codebase.
+    </p>
+
+    <div class="metrics">
+      <div class="metric"><div class="v">813 / 0 / 8</div><div class="k">lib tests passed / failed / ignored</div></div>
+      <div class="metric"><div class="v">841</div><div class="k">passing across the default test run</div></div>
+      <div class="metric"><div class="v">16 / 16</div><div class="k">Solidity executor tests</div></div>
+      <div class="metric"><div class="v">489 / 0 / 1</div><div class="k">earlier lib-suite snapshot (MVP era)</div></div>
+    </div>
+
+    <div class="table-scroll">
+      <table>
+        <thead><tr><th>What was verified</th><th>Evidence</th><th>Level</th></tr></thead>
+        <tbody>
+          <tr>
+            <td>Full library suite green</td>
+            <td><code>cargo test --lib --no-fail-fast</code> &rarr; <strong>813 passed / 0 failed / 8 ignored</strong>, ~4 s. Reproduced twice by the independent reviewer.</td>
+            <td><span class="badge b-verified">VERIFIED</span></td>
+          </tr>
+          <tr>
+            <td>Solidity executor suite</td>
+            <td><strong>16 / 0</strong>, independently re-run by the reviewer after catching its own wrong-directory error</td>
+            <td><span class="badge b-verified">VERIFIED</span></td>
+          </tr>
+          <tr>
+            <td>Test-count discrepancy explained, not waved away</td>
+            <td>809 vs 813 reconciled to exactly four added consequence-gate tests; the earlier figure was pre-remediation, the later one current. Both counts were traced to their source.</td>
+            <td><span class="badge b-verified">VERIFIED</span></td>
+          </tr>
+          <tr>
+            <td>V3 math correct against the protocol reference</td>
+            <td>12-test golden + differential suite (~400-case boundary sweep) against an independently written reference port, plus a 16-test termination/property suite. Two reviewer-found golden errors were corrected <em>against the oracle</em>.</td>
+            <td><span class="badge b-verified">VERIFIED</span></td>
+          </tr>
+          <tr>
+            <td>V3 traversal terminates structurally</td>
+            <td>Proven from the canonical remainder-as-fee rule plus the boundary tick rule — with the forbidden zero-progress shape asserted impossible, and the iteration bound demoted to a failure signal rather than the termination mechanism.</td>
+            <td><span class="badge b-verified">VERIFIED</span></td>
+          </tr>
+          <tr>
+            <td>No accidental live-execution posture</td>
+            <td>Complete send-path inventory: every broadcast site gated or dead-but-armed-and-recorded; consequence paths re-assert the gate; no raw-key fallback reachable on a live path.</td>
+            <td><span class="badge b-verified">VERIFIED</span></td>
+          </tr>
+          <tr>
+            <td>Ignored tests accounted for</td>
+            <td>All 8 ignored tests individually inspected and classified — none conceals a core defect; 3 require live network (banned offline), 3 require a provisioned fork, 2 are local-fork smoke tests. One carried an invariant recorded as a REPLACE requirement.</td>
+            <td><span class="badge b-verified">VERIFIED</span></td>
+          </tr>
+          <tr>
+            <td>Contract security audit</td>
+            <td>Explicitly recorded as <strong>deferred</strong> — "a meaningful audit is a third-party engagement and out of scope for this iteration."</td>
+            <td><span class="badge b-not">NOT ESTABLISHED</span></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="callout">
+      <h4>Review independence, stated honestly</h4>
+      <p class="small">
+        The independent verification pass recorded its own limitation up front: it was performed by the
+        same model lineage as the work it reviewed, making it a same-model adversarial pass rather than
+        a cross-model one. Mitigations were applied — every load-bearing claim re-derived from fresh
+        commands, prior conclusions deliberately distrusted — and the caveat was published rather than
+        omitted. A cross-model spot check was recommended as remaining work. That self-reported
+        limitation is part of the evidence, not a footnote to it.
+      </p>
+    </div>
+  </section>
+  <section class="block">
+    <h2>Technologies</h2>
+    <div class="table-scroll">
+      <table>
+        <thead><tr><th>Layer</th><th>Technologies</th></tr></thead>
+        <tbody>
+          <tr><td><strong>Language &amp; runtime</strong></td><td>Rust, async runtime, bounded typed channels, multi-threaded task supervision</td></tr>
+          <tr><td><strong>Chain access</strong></td><td>Two Ethereum client libraries for provider/failover and typed contract interaction; WebSocket + HTTP with automatic failover</td></tr>
+          <tr><td><strong>Contracts</strong></td><td>Solidity with a Foundry toolchain (build, tests, deploy scripts), vendored test framework, committed build artifacts</td></tr>
+          <tr><td><strong>Simulation</strong></td><td>Local fork node for end-to-end simulation; state-override <code>eth_call</code> for cheap pre-flight</td></tr>
+          <tr><td><strong>Persistence</strong></td><td>SQLite via a typed query builder — pools, tokens, block-tagged storage slots, discovery checkpoints</td></tr>
+          <tr><td><strong>Submission</strong></td><td>Private bundle relay backend and direct L2 submission backend, selected by configuration</td></tr>
+          <tr><td><strong>Observability</strong></td><td>REST + WebSocket API, metrics and health endpoints, React/Vite dashboard</td></tr>
+          <tr><td><strong>Testing</strong></td><td>Unit + integration suites, property-based testing for math and invariants, differential testing against protocol references, criterion benchmarks, fork-based contract tests</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="block">
+    <h2>Actual status</h2>
+    <p class="sub">Stated exactly as the project's own records state it.</p>
+
+    <div class="callout">
+      <h4>Where this system actually stands</h4>
+      <ul class="tight small">
+        <li><span class="badge b-implemented">IMPLEMENTED</span> &nbsp;Detection, route generation, quoting, simulation, gas modelling, execution planning, recovery, persistence, API and dashboard were all built and tested.</li>
+        <li><span class="badge b-verified">VERIFIED</span> &nbsp;The library and contract test suites are green and were independently re-executed.</li>
+        <li><span class="badge b-not">NOT ESTABLISHED</span> &nbsp;No mainnet transaction was sent. The project status record states this directly: <em>"No mainnet transactions sent"</em> and <em>"No profitability verification."</em></li>
+        <li><span class="badge b-not">NOT ESTABLISHED</span> &nbsp;The end-to-end path from an execution plan to a signed, submitted transaction was documented as <strong>incomplete</strong>. The status record's critical gap: the detection and execution layers existed but were not properly integrated — <em>"Plans exist but NO code path from plan &rarr; signed transaction &rarr; submission."</em></li>
+        <li><span class="badge b-not">NOT ESTABLISHED</span> &nbsp;No third-party security audit, no fuzzing campaign, and no formal verification of the executor contract.</li>
+        <li><span class="badge b-documented">DOCUMENTED</span> &nbsp;Route detection flow documentation itself terminates with the note that execution never happens.</li>
+      </ul>
+    </div>
+
+    <p>
+      This is the honest framing: a substantial, well-tested, well-instrumented system with genuine
+      engineering in its math, simulation, and safety layers — but one whose last mile of integration
+      was never completed, and which was never demonstrated live. That is precisely why the
+      re-architecture was undertaken rather than continued incrementally.
+    </p>
+
+    <div class="callout">
+      <h4>Next &rarr;</h4>
+      <p class="small">
+        <a href="re-architecture.html"><strong>Project 02 — System Re-Architecture</strong></a>:
+        how each of these findings became a permanent, mechanically enforced constraint in a clean-room
+        rebuild. <span class="badge b-progress">WORK IN PROGRESS</span>
+      </p>
+    </div>
+  </section>
+
+</div>
+</main>
+
+<footer class="site">
+  <div class="wrap">
+    <div><a href="../index.html">&larr; Back to portfolio home</a></div>
+    <div class="small">Static site — no build step, no external dependencies, no runtime services. Research and educational software.</div>
+  </div>
+</footer>
+
+</body>
+</html>

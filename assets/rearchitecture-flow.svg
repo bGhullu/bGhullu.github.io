@@ -1,0 +1,91 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 700" role="img"
+     aria-label="Re-architecture data flow: ingestion to single state store, market topology, route generation, validation, quoting, simulation proof, profit ledger, execution state machine, risk gate, and submission boundary">
+  <style>
+    .bg{fill:#0a0e13}
+    .box{fill:#11171f;stroke:#232d3a;stroke-width:1.5}
+    .boxk{fill:#0e1a1a;stroke:#1f6d4a;stroke-width:1.5}
+    .boxg{fill:#241b0d;stroke:#6b4c14;stroke-width:1.5}
+    .t{fill:#d7e0ea;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;font-size:15px;font-weight:600}
+    .s{fill:#93a3b5;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;font-size:12.5px}
+    .lt{fill:#6b7c8f;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;font-size:11.5px;letter-spacing:1.6px}
+    .arr{stroke:#4cc2ff;stroke-width:2;fill:none;marker-end:url(#ah)}
+    .arrk{stroke:#7ee0c0;stroke-width:2;fill:none;marker-end:url(#ahk)}
+    .arrg{stroke:#ffb74d;stroke-width:2;fill:none;marker-end:url(#ahg)}
+    .sup{stroke:#3a4757;stroke-width:1.6;fill:none;stroke-dasharray:5 4;marker-end:url(#ahs)}
+  </style>
+  <defs>
+    <marker id="ah" markerWidth="9" markerHeight="9" refX="7" refY="3.2" orient="auto"><path d="M0,0 L7,3.2 L0,6.4 z" fill="#4cc2ff"/></marker>
+    <marker id="ahk" markerWidth="9" markerHeight="9" refX="7" refY="3.2" orient="auto"><path d="M0,0 L7,3.2 L0,6.4 z" fill="#7ee0c0"/></marker>
+    <marker id="ahg" markerWidth="9" markerHeight="9" refX="7" refY="3.2" orient="auto"><path d="M0,0 L7,3.2 L0,6.4 z" fill="#ffb74d"/></marker>
+    <marker id="ahs" markerWidth="9" markerHeight="9" refX="7" refY="3.2" orient="auto"><path d="M0,0 L7,3.2 L0,6.4 z" fill="#3a4757"/></marker>
+  </defs>
+
+  <rect class="bg" width="900" height="700" rx="14"/>
+
+  <!-- vertical spine -->
+  <rect class="box" x="90" y="34" width="440" height="60" rx="9"/>
+  <text class="t" x="110" y="60">Ingestion · block + log continuity</text>
+  <text class="s" x="110" y="82">decode → state commands · checkpoint identity</text>
+
+  <rect class="box" x="90" y="126" width="440" height="60" rx="9"/>
+  <text class="t" x="110" y="152">StateStore — single runtime authority</text>
+  <text class="s" x="110" y="174">immutable generation-keyed snapshots · single writer</text>
+
+  <rect class="box" x="90" y="218" width="440" height="60" rx="9"/>
+  <text class="t" x="110" y="244">Market · topology index + quote engine</text>
+  <text class="s" x="110" y="266">pool graph · provenance-stamped quotes</text>
+
+  <rect class="box" x="90" y="310" width="440" height="60" rx="9"/>
+  <text class="t" x="110" y="336">Route generation → validation / identity</text>
+  <text class="s" x="110" y="358">deterministic candidate set · route fingerprint</text>
+
+  <rect class="box" x="90" y="402" width="440" height="60" rx="9"/>
+  <text class="t" x="110" y="428">T0 pre-screen → T1 bound simulation proof</text>
+  <text class="s" x="110" y="450">mandatory, non-stale · no bare eth_call substitute</text>
+
+  <rect class="boxk" x="90" y="494" width="440" height="60" rx="9"/>
+  <text class="t" x="110" y="520">ProfitLedger — sequential, one per candidate</text>
+  <text class="s" x="110" y="542">guaranteed floor vs expected · gas from simulation</text>
+
+  <!-- right-hand execution boundary -->
+  <rect class="boxg" x="596" y="310" width="270" height="60" rx="9"/>
+  <text class="t" x="616" y="336">Execution FSM</text>
+  <text class="s" x="616" y="358">11 progress states + terminals</text>
+
+  <rect class="boxg" x="596" y="402" width="270" height="60" rx="9"/>
+  <text class="t" x="616" y="428">Risk gate · mandate check</text>
+  <text class="s" x="616" y="450">caps, expiry, kill-switch → decision record</text>
+
+  <rect class="boxg" x="596" y="494" width="270" height="60" rx="9"/>
+  <text class="t" x="616" y="520">Nonce lease → signing → submission</text>
+  <text class="s" x="616" y="542">single broadcaster · capability-withheld</text>
+
+  <!-- bottom bus -->
+  <rect class="box" x="90" y="600" width="440" height="60" rx="9"/>
+  <text class="t" x="110" y="626">Canonical event bus</text>
+  <text class="s" x="110" y="648">bounded channels with explicit loss policies</text>
+
+  <rect class="box" x="596" y="600" width="270" height="60" rx="9"/>
+  <text class="t" x="616" y="626">Recovery L1–L4</text>
+  <text class="s" x="616" y="648">single path · restart reconciliation</text>
+
+  <!-- spine arrows -->
+  <path class="arr" d="M310,94 L310,122"/>
+  <path class="arr" d="M310,186 L310,214"/>
+  <path class="arr" d="M310,278 L310,306"/>
+  <path class="arr" d="M310,370 L310,398"/>
+  <path class="arr" d="M310,462 L310,490"/>
+
+  <!-- ledger -> FSM -->
+  <path class="arrk" d="M530,524 L592,340"/>
+  <!-- FSM chain -->
+  <path class="arrg" d="M731,370 L731,398"/>
+  <path class="arrg" d="M731,462 L731,490"/>
+
+  <!-- supervision -->
+  <path class="sup" d="M530,524 L592,630"/>
+  <path class="sup" d="M310,554 L310,596"/>
+
+  <!-- legend -->
+  <text class="s" x="90" y="686">Green = economics authority · Amber = execution boundary (gated) · Dashed = supervision / support</text>
+</svg>
